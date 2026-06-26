@@ -256,8 +256,27 @@ input[type=color]{width:38px;height:34px;border:1px solid var(--line);border-rad
       <div class="help">מפצל את הטקסט למשפטים ומייצר כל אחד בנפרד ואז מחבר. ElevenLabs נוטה "להזות" — לחזור על משפט או להוסיף תוכן בטקסטים ארוכים — מה ששובר את התזמון. פיצול כמעט מבטל את זה, ואם בכל זאת קרה — רק קטע אחד מושפע (והכלי מנסה שוב אוטומטית). הפלט הוא WAV. (כבה רק אם אתה רוצה ייצור יחיד מהיר.)</div>
       <div class="statusline" id="genWarn" style="color:var(--amber)"></div>
     </div>
-    <div style="margin-top:8px"><button class="btn pri" id="genBtn" disabled>ייצר דיבור + תזמון</button>
-      <span class="pill" id="genVoiceLabel" style="margin-right:8px">לא נבחר קול</span></div>
+  </section>
+
+  <!-- 3B · EXTERNAL AUDIO -> TIMING (Scribe) -->
+  <section class="card" id="sttCard">
+    <h2><span class="n">3ב</span> כבר יש לי קול (מ-HeyGen) → הפק תזמון</h2>
+    <div class="help" style="margin-top:0">אם הקול בא מ-HeyGen (או כל מקור אחר), אין לי תזמון ממנו. כאן מעלים את הקובץ, מדביקים למעלה את <b>אותו טקסט בדיוק</b> שנאמר, והכלי מפיק תזמון מילה-מילה — ואז נכנס לאותו מעצב כתוביות. הקול נשאר של HeyGen, רק התזמון מחושב כאן.</div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:2 1 280px">
+        <label>קובץ אודיו או וידאו</label>
+        <input type="file" id="sttFile" accept="audio/*,video/*">
+        <div class="help">עדיף <b>אודיו</b> (mp3/m4a/wav) — וידאו כבד עלול להיחסם בהעלאה. אם יש לך רק וידאו גדול, ייצא ממנו אודיו (ב-CapCut/HeyGen) והעלה אותו.</div>
+      </div>
+      <div style="flex:0 0 130px">
+        <label>שפה</label>
+        <input type="text" id="sttLang" value="heb" placeholder="heb / ריק לזיהוי אוטומטי">
+        <div class="help">"heb" = עברית. ריק = זיהוי אוטומטי.</div>
+      </div>
+    </div>
+    <div style="margin-top:6px"><button class="btn pri" id="sttBtn">הפק תזמון מהאודיו</button>
+      <span class="statusline" id="sttStatus" style="margin-right:10px"></span></div>
+    <div class="help" style="margin-top:8px"><b>איך זה מדויק בעברית:</b> המנוע מתמלל (ולפעמים טועה בעברית), אבל הכלי <b>מתעלם מהמילים שלו ומשתמש במילים מהתסריט שלך</b> — לוקח רק את התזמון. ככה המילים נכונות והתזמון מדויק. תמיד תעבור על התוצאה בתצוגה לפני ייצוא.</div>
   </section>
 
   <!-- 4 · RESULT -->
@@ -433,6 +452,54 @@ async function elFetch(p,opts={}){
   return fetch("https://api.elevenlabs.io/v1"+p,{method:m,headers:Object.assign({"xi-api-key":state.key},opts.headers||{}),body:opts.body});
 }
 async function elJSON(p,opts){const r=await elFetch(p,opts);if(!r.ok){let msg="HTTP "+r.status;try{const j=await r.json();msg=(j.detail&&(j.detail.message||JSON.stringify(j.detail)))||j.error||msg;}catch(e){}throw new Error(msg);}return r.json();}
+
+/* ===== external audio -> timing: Scribe transcription + known-text alignment ===== */
+function sttNorm(w){return (w||"").replace(/[\u0591-\u05C7]/g,"").replace(/[.,:;!?…"'״׳()\[\]{}\-–\u05be]/g,"").trim();}
+function lcsPairs(a,b){const n=a.length,m=b.length;const dp=[];for(let i=0;i<=n;i++)dp.push(new Int32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const pairs=[];let i=0,j=0;while(i<n&&j<m){if(a[i]===b[j]){pairs.push([i,j]);i++;j++;}else if(dp[i+1][j]>=dp[i][j+1])i++;else j++;}return pairs;}
+function alignKnownText(scribeWords,scriptWords,totalDur){
+  const sN=scribeWords.map(w=>sttNorm(w.word)),tN=scriptWords.map(sttNorm);
+  const pairs=lcsPairs(sN,tN);const N=scriptWords.length;
+  const out=scriptWords.map(w=>({word:w,start:null,end:null}));
+  for(const pr of pairs){out[pr[1]].start=scribeWords[pr[0]].start;out[pr[1]].end=scribeWords[pr[0]].end;}
+  const anchors=[];for(let k=0;k<N;k++)if(out[k].start!=null)anchors.push(k);
+  const dur=totalDur||(scribeWords.length?scribeWords[scribeWords.length-1].end:N*0.4);
+  if(!anchors.length){for(let k=0;k<N;k++){out[k].start=+(dur*k/N).toFixed(3);out[k].end=+(dur*(k+1)/N).toFixed(3);}return out;}
+  const first=anchors[0],fT=out[first].start;
+  for(let k=0;k<first;k++){out[k].start=+(fT*k/Math.max(1,first)).toFixed(3);out[k].end=+(fT*(k+1)/Math.max(1,first)).toFixed(3);}
+  for(let a=0;a<anchors.length-1;a++){const i0=anchors[a],i1=anchors[a+1];const t0=out[i0].end!=null?out[i0].end:out[i0].start,t1=out[i1].start,gap=i1-i0;
+    if(gap<=1)continue;for(let k=i0+1;k<i1;k++){out[k].start=+(t0+(t1-t0)*(k-i0)/gap).toFixed(3);out[k].end=+(t0+(t1-t0)*(k-i0+1)/gap).toFixed(3);}}
+  const last=anchors[anchors.length-1],lT=out[last].end!=null?out[last].end:out[last].start,rem=Math.max(1,N-last);
+  for(let k=last+1;k<N;k++){out[k].start=+(lT+(dur-lT)*(k-last)/rem).toFixed(3);out[k].end=+(lT+(dur-lT)*(k-last+1)/rem).toFixed(3);}
+  for(let k=0;k<N;k++){if(out[k].start==null)out[k].start=k?out[k-1].end:0;if(out[k].end==null||out[k].end<=out[k].start)out[k].end=+(out[k].start+0.25).toFixed(3);}
+  return out;}
+async function sttAlign(){
+  const f=$("#sttFile").files[0];
+  if(!f){toast("בחר קובץ אודיו/וידאו","err");return;}
+  if(!state.key){toast("התחבר עם מפתח ElevenLabs קודם","err");return;}
+  let raw=$("#text").value.replace(/\{\{[^}]*\}\}/g,"").replace(/\[[^\]]*\]/g,"");
+  const scriptWords=raw.split(/\s+/).map(t=>displayWord(t)).filter(w=>sttNorm(w));
+  if(scriptWords.length<2){toast("הדבק קודם למעלה את הטקסט המדויק שנאמר","err");return;}
+  const st=$("#sttStatus");st.textContent="מעלה ומתמלל… רגע";$("#sttBtn").disabled=true;
+  try{
+    const fd=new FormData();fd.append("file",f);fd.append("model_id","scribe_v2");
+    const lang=$("#sttLang").value.trim();if(lang)fd.append("language_code",lang);
+    const j=await elJSON("/speech-to-text",{method:"POST",body:fd});
+    let sw=(j.words||[]).filter(w=>(w.type?w.type==="word":true)&&w.text&&w.text.trim())
+      .map(w=>({word:w.text,start:+w.start||0,end:(+w.end||((+w.start||0)+0.2))}));
+    if(!sw.length)throw new Error("התמלול לא החזיר מילים");
+    const aligned=alignKnownText(sw,scriptWords,sw[sw.length-1].end);
+    state.rawWords=aligned;state.blob=f;
+    state.lastResult={blob:f,text:$("#text").value,voiceName:state.voiceName||"HeyGen",model:"scribe",words:[]};
+    applyWordsDisplay();
+    const matched=lcsPairs(sw.map(w=>sttNorm(w.word)),scriptWords.map(sttNorm)).length;
+    st.textContent=`✓ תוזמנו ${aligned.length} מילים · ${matched}/${scriptWords.length} עוגנו ישירות לאודיו`;
+    toast("תזמון הופק — בדוק בתצוגה למטה","ok");if(typeof persistCache==="function")persistCache();
+  }catch(e){st.textContent="";toast("שגיאה: "+e.message,"err");}
+  $("#sttBtn").disabled=false;
+}
+$("#sttBtn").onclick=sttAlign;
 
 /* connect */
 $("#toggleKey").onclick=()=>{const i=$("#apiKey");i.type=i.type==="password"?"text":"password";$("#toggleKey").textContent=i.type==="password"?"הצג":"הסתר";};
